@@ -1,1 +1,105 @@
 
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+  <title>V3 倉儲 QR 掃描測試</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #f3f6fa;
+      font-family: Arial, sans-serif;
+      color: #17324d;
+    }
+    h2 { text-align: center; }
+    button {
+      padding: 15px;
+      font-size: 18px;
+      border: 0;
+      border-radius: 10px;
+      margin: 6px 0;
+      width: 100%;
+      background: #15375a;
+      color: white;
+    }
+    #stop { background: #777; }
+    video {
+      width: 100%;
+      background: #111;
+      border-radius: 12px;
+      margin-top: 15px;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: white;
+      padding: 12px;
+      border-radius: 10px;
+    }
+  </style>
+</head>
+<body>
+
+<h2>V3 倉儲相機測試</h2>
+
+<button id="start">啟動後置相機</button>
+<button id="stop">關閉相機</button>
+
+<video id="video" autoplay playsinline muted></video>
+<pre id="result">等待測試...</pre>
+
+<script>
+  let stream = null;
+  const video = document.getElementById('video');
+  const result = document.getElementById('result');
+
+  document.getElementById('start').onclick = async () => {
+    result.textContent =
+      'HTTPS 安全環境：' + window.isSecureContext +
+      '\n相機 API：' +
+      !!navigator.mediaDevices?.getUserMedia +
+      '\niframe：' + (window.self !== window.top);
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('此瀏覽器不支援相機 API');
+      }
+
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' }
+        }
+      });
+
+      video.srcObject = stream;
+      await video.play();
+
+      result.textContent += '\n相機啟動成功';
+    } catch (error) {
+      result.textContent +=
+        '\n錯誤名稱：' + error.name +
+        '\n錯誤訊息：' + error.message;
+    }
+  };
+
+  document.getElementById('stop').onclick = () => {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+    video.srcObject = null;
+    result.textContent = '相機已關閉';
+  };
+</script>
+
+</body>
+</html>
+
