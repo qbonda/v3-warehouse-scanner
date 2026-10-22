@@ -83,9 +83,27 @@
       item.textContent = slot;
       history.prepend(item);
       openV3.href = V3_URL + '?location=' + encodeURIComponent(slot);
+      openV3.textContent = window.opener && !window.opener.closed
+        ? '回傳原 V3 分頁並開啟儲位明細'
+        : '開啟 V3 儲位明細（可能需重新登入）';
       openV3.hidden = false;
       if (navigator.vibrate) navigator.vibrate(100);
     }
+    // 有 opener 時以 postMessage 回傳原 V3 分頁，避免新分頁重新登入。
+    // 若使用者直接開啟掃描器，仍保留原本的 V3 連結作為備援。
+    openV3.addEventListener('click', function(event) {
+      if (!window.opener || window.opener.closed) return;
+      const slot = parseSlot(lastCode);
+      if (!slot) return;
+      event.preventDefault();
+      try {
+        window.opener.postMessage({type:'V3_SLOT_SCAN',slot:slot}, '*');
+        result.textContent = '已回傳儲位 ' + slot + '，請切換回原本的 V3 分頁。';
+        // iOS 不保證 window.close / focus 能切回原分頁，故不自動關閉。
+      } catch (e) {
+        result.textContent = '回傳失敗，請使用 V3 連結或回到原分頁手動查詢：' + slot;
+      }
+    });
     function scanFrame() {
       if (!running) return;
       if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && typeof jsQR === 'function') {
