@@ -1,222 +1,164 @@
-
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>V3 倉儲 QR Code 掃描</title>
-
   <style>
-    body {
-      margin: 0;
-      padding: 20px;
-      background: #f3f6fa;
-      font-family: Arial, sans-serif;
-      color: #17324d;
-    }
-    h2 { text-align: center; }
-    button {
-      width: 100%;
-      padding: 15px;
-      margin: 6px 0;
-      font-size: 18px;
-      border: 0;
-      border-radius: 10px;
-      background: #15375a;
-      color: white;
-    }
-    #stop { background: #777; }
-    #cameraBox {
-      position: relative;
-      margin-top: 15px;
-    }
-    video {
-      width: 100%;
-      display: block;
-      background: #111;
-      border-radius: 12px;
-    }
-    #scanFrame {
-      position: absolute;
-      left: 20%;
-      top: 20%;
-      width: 60%;
-      height: 60%;
-      border: 3px solid #35e59b;
-      border-radius: 15px;
-      box-sizing: border-box;
-      pointer-events: none;
-    }
-    #result {
-      background: white;
-      padding: 15px;
-      margin-top: 15px;
-      border-radius: 10px;
-      overflow-wrap: anywhere;
-    }
-    #history {
-      padding-left: 22px;
-      overflow-wrap: anywhere;
-    }
+    body { margin:0; padding:20px; background:#f3f6fa; font-family:Arial,sans-serif; color:#17324d; }
+    h2 { text-align:center; }
+    button { width:100%; padding:15px; margin:6px 0; font-size:18px; border:0; border-radius:10px; background:#15375a; color:white; }
+    button:disabled { opacity:.45; }
+    #stop { background:#777; }
+    #openSlot { background:#08784e; }
+    #cameraBox { position:relative; margin-top:15px; }
+    video { width:100%; display:block; background:#111; border-radius:12px; }
+    #scanFrame { position:absolute; left:20%; top:20%; width:60%; height:60%; border:3px solid #35e59b; border-radius:15px; box-sizing:border-box; pointer-events:none; }
+    #result { background:white; padding:15px; margin-top:15px; border-radius:10px; overflow-wrap:anywhere; line-height:1.6; }
+    #history { padding-left:22px; overflow-wrap:anywhere; }
+    .hint { font-size:13px; color:#586b7e; }
   </style>
 </head>
-
 <body>
   <h2>V3 倉儲 QR Code 掃描</h2>
-
   <button id="start">啟動掃描</button>
   <button id="stop">關閉掃描</button>
-
   <div id="cameraBox">
     <video id="video" autoplay playsinline muted></video>
     <div id="scanFrame"></div>
   </div>
-
   <div id="result">等待啟動掃描...</div>
-
+  <button id="openSlot" disabled>開啟 V3 儲位明細</button>
+  <p class="hint">掃描儲位 QR Code 後，確認編號再開啟 V3。此掃描器不儲存登入憑證。</p>
   <h3>掃描紀錄（僅此頁面）</h3>
   <ol id="history"></ol>
 
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-
   <script>
+    // 必填：改成 V3 Google Apps Script「網頁應用程式」的 /exec 網址。
+    // 不要填 Apps Script 編輯器網址，也不要放入任何登入憑證。
+    const V3_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbzDYbdlzOpzvXa42JCCwibMZuiEJN02Xt39yndZNggKUECOfBr9yER6rUI1dYfGTUI36Q/exec';
+
     let stream = null;
     let running = false;
     let animationId = null;
     let lastCode = '';
     let lastTime = 0;
+    let selectedSlot = '';
 
     const video = document.getElementById('video');
     const result = document.getElementById('result');
     const history = document.getElementById('history');
-
+    const openSlotButton = document.getElementById('openSlot');
     const canvas = document.createElement('canvas');
-    const context = canvas.getContext(
-      '2d', { willReadFrequently: true }
-    );
+    const context = canvas.getContext('2d', { willReadFrequently:true });
+
+    function validWebAppUrl() {
+      try {
+        const url = new URL(V3_WEB_APP_URL);
+        return url.protocol === 'https:' &&
+          url.hostname === 'script.google.com' &&
+          /^\/macros\/s\/[^/]+\/exec\/?$/.test(url.pathname);
+      } catch (e) { return false; }
+    }
+
+    // 只接受儲位編號或帶有 location / slot 參數的網址。
+    // 實際儲位是否存在，仍交由 V3 儲位主檔驗證。
+    function parseSlot(raw) {
+      let value = String(raw || '').trim();
+      try {
+        if (/^https?:\/\//i.test(value)) {
+          const u = new URL(value);
+          value = u.searchParams.get('location') || u.searchParams.get('slot') || '';
+        }
+      } catch (e) { return ''; }
+      value = value.trim().toUpperCase();
+      // 支援 A–G 固定儲位及 S 浮動儲位的常見編碼；不接受任意網址或腳本。
+      return /^(?:[A-G][A-Z0-9_-]{1,24}|S\d{2}(?:[-_]?[1-4])?)$/.test(value) ? value : '';
+    }
 
     function stopScanner() {
       running = false;
-
       if (animationId !== null) {
         cancelAnimationFrame(animationId);
         animationId = null;
       }
-
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
         stream = null;
       }
-
       video.srcObject = null;
+    }
+
+    function acceptCode(raw) {
+      const now = Date.now();
+      if (raw === lastCode && now - lastTime <= 3000) return;
+      lastCode = raw;
+      lastTime = now;
+      const slot = parseSlot(raw);
+      selectedSlot = slot;
+      openSlotButton.disabled = !slot;
+      result.textContent = slot
+        ? '掃描成功：' + slot + '。確認後點擊「開啟 V3 儲位明細」。'
+        : '已掃描，但不是可辨識的儲位 QR Code：' + raw;
+      const item = document.createElement('li');
+      item.textContent = slot || raw;
+      history.prepend(item);
+      if (navigator.vibrate) navigator.vibrate(100);
     }
 
     function scanFrame() {
       if (!running) return;
-
-      if (
-        video.readyState >= 2 &&
-        video.videoWidth > 0 &&
-        video.videoHeight > 0 &&
-        typeof jsQR === 'function'
-      ) {
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && typeof jsQR === 'function') {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-
-        context.drawImage(
-          video, 0, 0,
-          canvas.width, canvas.height
-        );
-
-        const image = context.getImageData(
-          0, 0, canvas.width, canvas.height
-        );
-
-        const code = jsQR(
-          image.data,
-          image.width,
-          image.height,
-          { inversionAttempts: 'attemptBoth' }
-        );
-
-        if (code && code.data) {
-          const now = Date.now();
-
-          if (
-            code.data !== lastCode ||
-            now - lastTime > 3000
-          ) {
-            lastCode = code.data;
-            lastTime = now;
-
-            result.textContent =
-              '掃描成功：' + code.data;
-
-            const item = document.createElement('li');
-            item.textContent = code.data;
-            history.prepend(item);
-
-            if (navigator.vibrate) {
-              navigator.vibrate(100);
-            }
-          }
-        }
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const image = context.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(image.data, image.width, image.height, { inversionAttempts:'attemptBoth' });
+        if (code && code.data) acceptCode(code.data);
       }
-
       animationId = requestAnimationFrame(scanFrame);
     }
 
-    document.getElementById('start').onclick =
-      async () => {
+    document.getElementById('start').onclick = async () => {
+      stopScanner();
+      selectedSlot = '';
+      openSlotButton.disabled = true;
+      lastCode = '';
+      result.textContent = '正在啟動相機...';
+      try {
+        if (typeof jsQR !== 'function') throw new Error('QR 辨識程式載入失敗，請檢查網路');
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error('瀏覽器不支援相機');
+        stream = await navigator.mediaDevices.getUserMedia({ audio:false, video:{ facingMode:{ ideal:'environment' } } });
+        video.srcObject = stream;
+        await video.play();
+        running = true;
+        result.textContent = '相機已啟動，請對準 QR Code';
+        scanFrame();
+      } catch (error) {
         stopScanner();
-
-        result.textContent = '正在啟動相機...';
-
-        try {
-          if (typeof jsQR !== 'function') {
-            throw new Error(
-              'QR 辨識程式載入失敗，請檢查網路'
-            );
-          }
-
-          if (!navigator.mediaDevices?.getUserMedia) {
-            throw new Error('瀏覽器不支援相機');
-          }
-
-          stream = await navigator.mediaDevices
-            .getUserMedia({
-              audio: false,
-              video: {
-                facingMode: { ideal: 'environment' }
-              }
-            });
-
-          video.srcObject = stream;
-          await video.play();
-
-          running = true;
-          result.textContent =
-            '相機已啟動，請對準 QR Code';
-
-          scanFrame();
-
-        } catch (error) {
-          stopScanner();
-          result.textContent =
-            '啟動失敗：' +
-            error.name + ' ' + error.message;
-        }
-      };
+        result.textContent = '啟動失敗：' + error.name + ' ' + error.message;
+      }
+    };
 
     document.getElementById('stop').onclick = () => {
       stopScanner();
       result.textContent = '掃描已關閉';
     };
 
-    window.addEventListener(
-      'pagehide', stopScanner
-    );
+    openSlotButton.onclick = () => {
+      if (!selectedSlot) return;
+      if (!validWebAppUrl()) {
+        result.textContent = '尚未設定正確的 V3 /exec 網址，請先完成設定。';
+        return;
+      }
+      stopScanner();
+      const target = new URL(V3_WEB_APP_URL);
+      target.searchParams.set('location', selectedSlot);
+      window.location.assign(target.toString());
+    };
+
+    window.addEventListener('pagehide', stopScanner);
   </script>
 </body>
 </html>
